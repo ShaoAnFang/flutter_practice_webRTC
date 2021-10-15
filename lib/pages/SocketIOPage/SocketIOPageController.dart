@@ -1,13 +1,12 @@
-
 import 'package:get/get.dart';
 import 'package:socket_io_client/socket_io_client.dart' as IO;
 import 'package:socket_io_client/socket_io_client.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'dart:core';
-import 'package:flutter_webrtc/src/native/rtc_peerconnection_factory.dart' as PF;
+import 'package:flutter_webrtc/src/native/rtc_peerconnection_factory.dart'
+    as PF;
 
 class SocketIOPageController extends GetxController {
-
   late IO.Socket socket;
 
   final _isOnConnect = false.obs;
@@ -30,15 +29,15 @@ class SocketIOPageController extends GetxController {
 
   get isCameraEnable => this._isCameraEnable.value;
 
-  String _sdp = '';
-
   final RTCVideoRenderer localRenderer = RTCVideoRenderer();
   final RTCVideoRenderer remoteRenderer = RTCVideoRenderer();
   MediaStream? localStream;
 
   @override
   onInit() async {
-    initRenderers();
+    await initRenderers();
+    await createLocalStream();
+    await initPeerConnection();
     connectSokcetIO();
     super.onInit();
   }
@@ -60,7 +59,6 @@ class SocketIOPageController extends GetxController {
   connectSokcetIO() {
     socket = IO.io('wss://192.168.x.xx:8088', <String, dynamic>{
       'transports': ['websocket'],
-      // 'auth': {'token': "Bearer $token"}
     });
 
     socket.onConnect((_) {
@@ -85,7 +83,7 @@ class SocketIOPageController extends GetxController {
     socket.on('ice_candidate', (data) async {
       print('收到 ice_candidate');
       candidate = RTCIceCandidate(data["candidate"], "", data["label"]);
-      await _peerConnection!.addCandidate(candidate);
+      await _peerConnection?.addCandidate(candidate);
     });
 
     socket.on('offer', (data) async {
@@ -101,7 +99,7 @@ class SocketIOPageController extends GetxController {
       print('收到 answer');
       final desc = RTCSessionDescription(data['sdp'], data['type']);
       // 設定對方的配置
-      await _peerConnection!.setRemoteDescription(desc);
+      await _peerConnection?.setRemoteDescription(desc);
     });
 
     socket.on('leaved', (_) {
@@ -139,8 +137,8 @@ class SocketIOPageController extends GetxController {
 
       final offerSdpConstraints = <String, dynamic>{
         'mandatory': {
-          'OfferToReceiveAudio': true, 
-          'OfferToReceiveVideo': true, 
+          'OfferToReceiveAudio': true,
+          'OfferToReceiveVideo': true,
         },
         'optional': [],
       };
@@ -151,11 +149,11 @@ class SocketIOPageController extends GetxController {
         var description =
             await _peerConnection!.createOffer(offerSdpConstraints);
         //設定本地的SDP
-        await _peerConnection?.setLocalDescription(description);
+        await _peerConnection!.setLocalDescription(description);
         localSDP = await _peerConnection!.createOffer();
       } else {
         // 設定對方的配置
-        await _peerConnection!.setRemoteDescription(desc!);
+        await _peerConnection?.setRemoteDescription(desc!);
         localSDP = await _peerConnection!.createAnswer();
       }
       // 設定本地SDP
@@ -164,7 +162,7 @@ class SocketIOPageController extends GetxController {
       // 寄出SDP信令
       final e = isOffer ? 'offer' : 'answer';
       // print(_peerConnection?.getLocalDescription);
-      final localDescription = await _peerConnection!.getLocalDescription();
+      final localDescription = await _peerConnection?.getLocalDescription();
       print(localDescription);
       socket.emit(e, [room, localDescription!.toMap()]);
     } catch (err) {
@@ -196,9 +194,6 @@ class SocketIOPageController extends GetxController {
   _onIceCandidate(RTCIceCandidate candidate) {
     print('onCandidate: ${candidate.candidate}');
     _peerConnection?.addCandidate(candidate);
-    _sdp += '\n';
-    _sdp += candidate.candidate ?? '';
-    // print(_sdp);
     // 發送 ICE
     socket.emit('ice_candidate', [
       room,
@@ -214,7 +209,6 @@ class SocketIOPageController extends GetxController {
     print('RenegotiationNeeded');
   }
 
- 
   _onTrack(RTCTrackEvent event) {
     print('onTrack');
     if (event.track.kind == 'video') {
@@ -251,23 +245,28 @@ class SocketIOPageController extends GetxController {
     try {
       _peerConnection =
           await createPeerConnection(configuration, loopbackConstraints);
-      _peerConnection!.onSignalingState = _onSignalingState;
-      _peerConnection!.onIceGatheringState = _onIceGatheringState;
-      _peerConnection!.onIceConnectionState = _onIceConnectionState;
-      _peerConnection!.onIceCandidate = _onIceCandidate;
-      _peerConnection!.onRenegotiationNeeded = _onRenegotiationNeeded;
+      _peerConnection?.onSignalingState = _onSignalingState;
+      _peerConnection?.onIceGatheringState = _onIceGatheringState;
+      _peerConnection?.onIceConnectionState = _onIceConnectionState;
+      _peerConnection?.onIceCandidate = _onIceCandidate;
+      _peerConnection?.onRenegotiationNeeded = _onRenegotiationNeeded;
 
-      _peerConnection!.onTrack = _onTrack;
-      _peerConnection!.onAddStream = _onAddStream;
-      _peerConnection!.onRemoveStream = _onRemoveStream;
+      _peerConnection?.onTrack = _onTrack;
+      _peerConnection?.onAddStream = _onAddStream;
+      _peerConnection?.onRemoveStream = _onRemoveStream;
 
-      setLocalStream();
+      // 增加本地串流
+      localStream!
+          .getTracks()
+          .forEach((track) => _peerConnection?.addTrack(track, localStream!));
+      localStream!.getAudioTracks().forEach((item) => item.enabled = false);
+      localStream!.getVideoTracks().forEach((item) => item.enabled = false);
     } catch (e) {
       print(e.toString());
     }
   }
 
-  setLocalStream() async {
+  createLocalStream() async {
     final mediaConstraints = <String, dynamic>{
       'audio': true,
       'video': {
@@ -282,23 +281,10 @@ class SocketIOPageController extends GetxController {
     };
 
     try {
-      var sstream =
-          await PF.navigator.mediaDevices.getDisplayMedia(mediaConstraints);
-      print(sstream);
-
       var stream =
           await PF.navigator.mediaDevices.getUserMedia(mediaConstraints);
       localStream = stream;
       localRenderer.srcObject = stream;
-
-      /* 增加本地串流, 預設關閉
-         由isCameraEnable 的setter觸發打開
-      */
-      localStream!
-          .getTracks()
-          .forEach((track) => _peerConnection!.addTrack(track, localStream!));
-      localStream!.getAudioTracks().forEach((item) => item.enabled = false);
-      localStream!.getVideoTracks().forEach((item) => item.enabled = false);
     } catch (e) {
       print(e.toString());
     }
